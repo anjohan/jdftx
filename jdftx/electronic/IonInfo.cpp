@@ -36,6 +36,7 @@ IonInfo::IonInfo()
 {	shouldPrintForceComponents = false;
 	vdWenable = false;
 	vdWscale = 0.;
+	vdWstyle = VDW_D2;
 	ljOverride = false;
 	computeStress = false;
 }
@@ -518,7 +519,7 @@ void IonInfo::pairPotentialsAndGrad(Energies* ener, IonicGradient* forces, matri
 	double EvdW = 0.;
 	if(vdWenable or ljOverride)
 	{	double scaleFac = e->vanDerWaals->getScaleFactor(e->exCorr.getName(), vdWscale);
-		EvdW = e->vanDerWaals->energyAndGrad(atoms, scaleFac, E_RRT); //vanDerWaals energy+force
+		EvdW = e->vanDerWaals->energyAndGrad(atoms, scaleFac, E_RRT); //vanDerWaals energy, force and/or stress
 	}
 	//Store energies and/or forces if requested:
 	if(ener)

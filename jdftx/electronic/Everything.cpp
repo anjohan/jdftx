@@ -19,7 +19,7 @@ along with JDFTx.  If not, see <http://www.gnu.org/licenses/>.
 
 #include <electronic/Everything.h>
 #include <electronic/ExactExchange.h>
-#include <electronic/VanDerWaals.h>
+#include <electronic/VanDerWaalsD3.h>
 #include <electronic/Vibrations.h>
 #include <electronic/DOS.h>
 #include <core/LatticeUtils.h>
@@ -122,8 +122,20 @@ void Everything::setup()
 		exx = std::make_shared<ExactExchange>(*this);
 
 	//Setup VanDerWaals corrections
-	if(iInfo.vdWenable || eVars.fluidParams.needsVDW() || iInfo.ljOverride)
-		vanDerWaals = std::make_shared<VanDerWaals>(*this);
+	//--- for electronic system:
+	if(iInfo.vdWenable or iInfo.ljOverride)
+	{	switch(iInfo.vdWstyle)
+		{	case VDW_D2: { vanDerWaals = std::make_shared<VanDerWaalsD2>(*this); break; }
+			case VDW_D3: { vanDerWaals = std::make_shared<VanDerWaalsD3>(*this); break; }
+		}
+	}
+	//--- for fluid (must be D2):
+	if(eVars.fluidParams.needsVDW())
+	{	if(iInfo.vdWenable and (iInfo.vdWstyle == VDW_D2))
+			vanDerWaalsFluid = std::static_pointer_cast<VanDerWaalsD2>(vanDerWaals); //reuse D2 created above
+		else
+			vanDerWaalsFluid = std::make_shared<VanDerWaalsD2>(*this, "fluid / solvation");
+	}
 	if(iInfo.ljOverride) eVars.skipWfnsInit = true; //don't need electronic degrees of freedom
 	
 	//Setup wavefunctions, densities, fluid, output module etc:

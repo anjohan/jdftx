@@ -116,7 +116,7 @@ public:
 
 		//Create van der Waals mixing functional
 		assert(e.vanDerWaals);
-		vdwCoupling = std::make_shared<VDWCoupling>(fluidMixture, atpos, e.vanDerWaals,
+		vdwCoupling = std::make_shared<VDWCoupling>(fluidMixture, atpos, e.vanDerWaalsFluid,
 			e.vanDerWaals->getScaleFactor(fsp.exCorr.getName(), fsp.vdwScale));
 
 		//---- G=0 constraints -----
@@ -324,7 +324,7 @@ void FluidSolver::set(const ScalarFieldTilde& rhoExplicitTilde, const ScalarFiel
 	{	matrix3<> embedScaleMat = Diag(e.coulomb->embedScale); //lattice coordinate scale factor due to embedding
 		for(std::vector<vector3<> >& posArr: atpos)
 			for(vector3<>& pos: posArr) //transform to embedded lattice coordinates:
-				pos = embedScaleMat *  e.coulomb->wsOrig->restrict(pos - e.coulomb->xCenter);
+				pos = embedScaleMat *  e.coulomb->wsOrig->reduce(pos - e.coulomb->xCenter);
 		ScalarFieldTilde rhoExplicitTildeExpand = e.coulomb->embedExpand(rhoExplicitTilde);
 		if(!k2factor) rhoExplicitTildeExpand->setGzero(0.); //No screening => apply neutralizing background charge
 		set_internal(rhoExplicitTildeExpand, e.coulomb->embedExpand(nCavityTilde));
