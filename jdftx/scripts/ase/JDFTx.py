@@ -7,7 +7,7 @@
 from __future__ import print_function  # For Python2 compatibility
 
 import os, scipy, subprocess, tempfile, re
-from ase.calculators.interface import Calculator
+from ase.calculators.calculator import Calculator
 from ase.units import Bohr, Hartree
 import numpy as np
 
@@ -25,9 +25,14 @@ def replaceVariable(var, varName):
 
 
 class JDFTx(Calculator):
+    implemented_properties = ["energy", "forces", "stress"]
+    discard_results_on_any_change = True
+
     def __init__(
         self, executable=None, pseudoDir=None, pseudoSet="GBRV", commands=None
     ):
+        Calculator.__init__(self)
+
         # Valid pseudopotential sets (mapping to path and suffix):
         pseudoSetMap = {
             "SG15": "SG15/$ID_ONCV_PBE.upf",
@@ -82,7 +87,6 @@ class JDFTx(Calculator):
         self.E = None
         self.Forces = None
         self.Stress = None
-        self.results = {}
 
         # History
         self.lastAtoms = None
