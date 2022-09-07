@@ -1,32 +1,65 @@
 /** \page Supercomputers Compiling on supercomputers
 
-## Compiling on TACC
+## Compiling on NERSC Perlmutter
 
-Use the GNU compilers and MKL for the easiest compilation on [TACC Stampede](https://www.tacc.utexas.edu/stampede).
+Compiling JDFTx to use the NVIDIA A100 GPUs on [NERSC Perlmutter](http://www.nersc.gov)
+should work with default compilers within the GNU programming environment.
+Make sure to pull the latest code from git, as support for these GPUs and the Cray libraries is recent.
+Additional flags below are required to link non-threaded Cray libsci and avoid a crash within libsci during cleanup.
 The following commands may be used to invoke cmake (assuming bash shell):
 
-    #Select gcc as the compiler:
-    module load gcc/4.7.1
-    module load mkl gsl cuda cmake fftw3
+    module load PrgEnv-gnu
+    module load cmake cray-fftw cudatoolkit gsl
+    export CRAY_ACCEL_TARGET=nvidia80  # needed for CUDA-aware MPI support
     
-    #Configure:
-    CC=gcc CXX=g++ cmake \
-       -D EnableCUDA=yes \
-       -D EnableMKL=yes \
-       -D ForceFFTW=yes \
-       -D MKL_PATH="$TACC_MKL_DIR" \
-       -D FFTW3_PATH="$TACC_FFTW3_DIR" \
-       -D GSL_PATH="$TACC_GSL_DIR" \
-       ../jdftx-VERSION/jdftx
+    CC=cc CXX=CC cmake \
+            -D EnableProfiling=yes \
+            -D FFTW3_PATH=${FFTW_ROOT} \
+            -D GSL_PATH=${GSL_ROOT} \
+            -D CBLAS_LIBRARY=${GSL_ROOT}/lib/libgslcblas.so \
+            -D EnableCUDA=yes \
+            -D EnableCuSolver=yes \
+            -D CudaAwareMPI=yes \
+            -D PinnedHostMemory=yes \
+            -D CUDA_NVCC_FLAGS="-Wno-deprecated-gpu-targets -allow-unsupported-compiler -std=c++14" \
+            -D CUDA_ARCH=compute_80 \
+            -D CUDA_CODE=sm_80 \
+            -D EXTRA_CXX_FLAGS="-DDONT_FINALIZE_MPI -L/opt/cray/pe/lib64 -lsci_gnu_82" \
+            -D CMAKE_LIBRARY_PATH="${LD_LIBRARY_PATH//:/;}" \
+            ../jdftx-git/jdftx
+
+
+If you put the above in a script file, make sure to source it (rather than run it) because the CRAY_ACCEL_TARGET export needs to be set during make as well.
+
+When running jobs on perlmutter, make sure the same modules are loaded 
+(module load lines in the compile script above) before launching a job.
+Here's an example job script using two nodes with four GPUs each:
+
+    #!/bin/bash
+    #SBATCH -A account_g      # replace with valid account
+    #SBATCH -t 10             # replace with suitable time limit
+    #SBATCH -C gpu
+    #SBATCH -q regular
+    #SBATCH -N 2
+    #SBATCH -n 8
+    #SBATCH --ntasks-per-node=4
+    #SBATCH -c 32
+    #SBATCH --gpus-per-task=1
     
-    make -j12
+    export SLURM_CPU_BIND="cores"
+    export JDFTX_MEMPOOL_SIZE=8192      # adjust as needed (in MB)
+    export MPICH_GPU_SUPPORT_ENABLED=1  # needed for CUDA-aware MPI support
+    
+    srun /path/to/jdftx_gpu -i inputfile.in
 
-Make on the login nodes (as shown above) or on the gpu queue if you loaded cuda; it should work on any machine otherwise.
+Please report any issues with building or running JDFTx on Perlmutter.
+In particular, we may need to select specific module versions after Cray updates,
+and hence may need to update these instructions.
 
 
-## Compiling on NERSC
+## Compiling on NERSC Edison/Cori
 
-Use the gnu compiler and MKL to compile JDFTx on [NERSC edison/cori](http://www.nersc.gov).
+Use the gnu compiler and MKL to compile JDFTx on [NERSC Edison/Cori](http://www.nersc.gov).
 The following commands may be used to invoke cmake (assuming bash shell):
 
     #Select the right compiler and load necessary modules
@@ -52,4 +85,29 @@ The optional ThreadedBLAS=no line above uses single-threaded MKL with threads
 managed by JDFTx instead. This slightly reduces performance (around 5%)
 compared to using MKL threads, but MKL threads frequently lead to
 a crash when trying to create pthreads elsewhere in JDFTx on NERSC.
+
+
+## Compiling on TACC
+
+Use the GNU compilers and MKL for the easiest compilation on [TACC Stampede](https://www.tacc.utexas.edu/stampede).
+The following commands may be used to invoke cmake (assuming bash shell):
+
+    #Select gcc as the compiler:
+    module load gcc/4.7.1
+    module load mkl gsl cuda cmake fftw3
+    
+    #Configure:
+    CC=gcc CXX=g++ cmake \
+       -D EnableCUDA=yes \
+       -D EnableMKL=yes \
+       -D ForceFFTW=yes \
+       -D MKL_PATH="$TACC_MKL_DIR" \
+       -D FFTW3_PATH="$TACC_FFTW3_DIR" \
+       -D GSL_PATH="$TACC_GSL_DIR" \
+       ../jdftx-VERSION/jdftx
+    
+    make -j12
+
+Make on the login nodes (as shown above) or on the gpu queue if you loaded cuda; it should work on any machine otherwise.
+
 */

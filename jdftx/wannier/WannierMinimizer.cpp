@@ -151,6 +151,7 @@ matrix WannierMinimizer::fixUnitary(const matrix& U, bool* isSingular)
 {	return U * invsqrt(dagger(U) * U, 0, 0, isSingular);
 }
 
+
 bool WannierMinimizer::report(int iter)
 {	//Check unitarity:
 	bool needRestart = false;

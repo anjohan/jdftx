@@ -162,15 +162,15 @@ protected:
 	//! Preconditioner for Wannier optimization: identity by default, override in derived class to change
 	virtual WannierGradient precondition(const WannierGradient& grad);
 
+	//! Return an exactly unitary version of U (orthogonalize columns)
+	//! If isSingular is provided, function will set it to true and return rather than stack-tracing in singular cases.
+	static matrix fixUnitary(const matrix& U, bool* isSingular=0); 
+
 private:
 
 	//! Get the trial wavefunctions (hydrogenic, atomic or numerical orbitals) for the group of centers in the common basis
 	ColumnBundle trialWfns(const Kpoint& kpoint) const;
 	std::map< Kpoint, std::shared_ptr<ColumnBundle> > numericalOrbitals; //!< numerical orbitals read from file
-	
-	//! Return an exactly unitary version of U (orthogonalize columns)
-	//! If isSingular is provided, function will set it to true and return rather than stack-tracing in singular cases.
-	static matrix fixUnitary(const matrix& U, bool* isSingular=0); 
 	
 	//! Load / compute rotations for a given spin channel (used by saveMLWF)
 	void initRotations(int iSpin);
@@ -188,6 +188,7 @@ private:
 	void saveMLWF_P(int iSpin, const matrix& phase); //Momenta
 	void saveMLWF_D(int iSpin, const matrix& phase); //Gradient
 	void saveMLWF_S(int iSpin, const matrix& phase); //Spins
+	void saveMLWF_RP(int iSpin, const matrix& phase); //R*P matrix elements
 	void saveMLWF_W(int iSpin, const matrix& phase); //Slab weights
 	void saveMLWF_Z(int iSpin, const matrix& phase); //z position operator
 	void saveMLWF(int iSpin, const matrix& phase, const ScalarFieldArray& w, string varName, bool suppressUnbound); //helper function for scalar field matrix elements (eg. slab and z)

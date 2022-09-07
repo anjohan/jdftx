@@ -217,7 +217,7 @@ void ElecVars::setup(const Everything &everything)
 				{	//Ensure that the initalized bands are orthonormal:
 					ColumnBundle Cfixed = C[q].getSub(0, nBandsInited);
 					ColumnBundle OCfixed = O(Cfixed);
-					matrix ortho = invsqrt(Cfixed^OCfixed);
+					matrix ortho = orthoMatrix(Cfixed ^ OCfixed);
 					Cfixed = Cfixed * ortho;
 					OCfixed = OCfixed * ortho;
 					//Project out initalized band directions from the rest:
@@ -229,8 +229,7 @@ void ElecVars::setup(const Everything &everything)
 		
 		//Orthogonalize initial wavefunctions:
 		for(int q=eInfo.qStart; q<eInfo.qStop; q++)
-		{	matrix CdagOC = C[q] ^ O(C[q]);
-			C[q] = C[q] * invsqrt(CdagOC);
+		{	C[q] = C[q] * orthoMatrix(C[q] ^ O(C[q]));
 			iInfo.project(C[q], VdagC[q]);
 		}
 	}
@@ -637,13 +636,13 @@ ScalarFieldArray ElecVars::calcDensity() const
 void ElecVars::orthonormalize(int q, matrix* extraRotation)
 {	assert(e->eInfo.isMine(q));
 	VdagC[q].clear();
-	matrix rot = invsqrt(C[q]^O(C[q], &VdagC[q])); //Compute U:
+	matrix rot = orthoMatrix(C[q]^O(C[q], &VdagC[q])); //Compute matrix that orthonormalizes wavefunctions
 	if(extraRotation) *extraRotation = (rot = rot * (*extraRotation)); //set rot and extraRotation to the net transformation
 	C[q] = C[q] * rot;
 	e->iInfo.project(C[q], VdagC[q], &rot); //update the atomic projections
 }
 
-double ElecVars::applyHamiltonian(int q, const diagMatrix& Fq, ColumnBundle& HCq, Energies& ener, bool need_Hsub)
+double ElecVars::applyHamiltonian(int q, const diagMatrix& Fq, ColumnBundle& HCq, Energies& ener, bool need_Hsub, bool diagonalize_Hsub)
 {	assert(C[q]); //make sure wavefunction is available for this state
 	const QuantumNumber& qnum = e->eInfo.qnums[q];
 	std::vector<matrix> HVdagCq(e->iInfo.species.size());
@@ -683,7 +682,8 @@ double ElecVars::applyHamiltonian(int q, const diagMatrix& Fq, ColumnBundle& HCq
 	//Compute subspace hamiltonian if needed:
 	if(need_Hsub)
 	{	Hsub[q] = C[q] ^ HCq;
-		Hsub[q].diagonalize(Hsub_evecs[q], Hsub_eigs[q]);
+		if(diagonalize_Hsub)
+			Hsub[q].diagonalize(Hsub_evecs[q], Hsub_eigs[q]);
 	}
 	return KEq;
 }

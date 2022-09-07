@@ -44,7 +44,8 @@ public:
 		Kpoint point; //!< description of neighbour (source state, rotation, translation etc.)
 		matrix M0; //!< initial overlap matrix for this pair
 	};
-	std::vector< std::vector<Edge> > edges; //!< set of all edges
+	std::vector< std::vector<Edge> > edges; //!< unidirectional edges on full k-mesh
+	std::vector< std::vector<Edge> > edges_bi; //!< bidirectional edges for full k-mesh (only initialized if saveRP)
 	matrix kHelmholtzInv; //!< inverse Helmholtz preconditioner
 };
 

@@ -43,7 +43,9 @@ extern "C"
 		complex* WORK, int* LWORK, double* RWORK, int* INFO);
 	void zgetrf_(int* M, int* N, complex* A, int* LDA, int* IPIV, int* INFO);
 	void zgetri_(int* N, complex* A, int* LDA, int* IPIV, complex* WORK, int* LWORK, int* INFO);
-	void zposv_(char* UPLO, int* N, int* NRHS, complex* A, int* LDA, complex* B, int* LDB, int* INFO);
+	void zpotrf_(char* UPLO, int* N, complex* A, int* LDA, int* INFO);
+	void zpotrs_(char* UPLO, int* N, int* NRHS, complex* A, int* LDA, complex* B, int* LDB, int* INFO);
+	void ztrtri_(char* UPLO, char* DIAG, int* N, complex* A, int* LDA, int* INFO);
 }
 
 //------------------------- Eigensystem -----------------------------------
@@ -76,13 +78,11 @@ void matrix::diagonalize(matrix& evecs, diagMatrix& eigs) const
 		evecs = *this;
 		//Determine buffer size:
 		int lwork = 0;
-		syevjInfo_t params; cusolverDnCreateSyevjInfo(&params);
-		cusolverDnZheevj_bufferSize(cusolverHandle, jobz, uplo, N, (const double2*)evecs.dataPref(), N, eigsManaged.dataPref(), &lwork, params);
+		cusolverDnZheevd_bufferSize(cusolverHandle, jobz, uplo, N, (const double2*)evecs.dataPref(), N, eigsManaged.dataPref(), &lwork);
 		//Main call:
 		ManagedArray<double2> work; work.init(lwork, true);
 		ManagedArray<int> infoArr; infoArr.init(1, true);
-		cusolverDnZheevj(cusolverHandle, jobz, uplo, N, (double2*)evecs.dataPref(), N, eigsManaged.dataPref(), work.dataPref(), lwork, infoArr.dataPref(), params);
-		cusolverDnDestroySyevjInfo(params);
+		cusolverDnZheevd(cusolverHandle, jobz, uplo, N, (double2*)evecs.dataPref(), N, eigsManaged.dataPref(), work.dataPref(), lwork, infoArr.dataPref());
 		gpuErrorCheck();
 		int info = infoArr.data()[0];
 		if(!info) //Success
@@ -91,8 +91,8 @@ void matrix::diagonalize(matrix& evecs, diagMatrix& eigs) const
 			watch.stop();
 			return;
 		}
-		if(info<0) { logPrintf("Argument# %d to cusolverDn eigenvalue routine Zheevj is invalid.\n", -info); stackTraceExit(1); }
-		if(info>0) logPrintf("WARNING: %d elements failed to converge in cusolverDn eigenvalue routine Zheevj; falling back to CPU LAPACK.\n", info);
+		if(info<0) { logPrintf("Argument# %d to cusolverDn eigenvalue routine Zheevd is invalid.\n", -info); stackTraceExit(1); }
+		if(info>0) logPrintf("WARNING: %d elements failed to converge in cusolverDn eigenvalue routine Zheevd; falling back to CPU LAPACK.\n", info);
 	}
 #endif
 	char jobz = 'V'; //compute eigenvectors and eigenvalues
@@ -384,17 +384,30 @@ diagMatrix inv(const diagMatrix& A)
 	return invA;
 }
 
-matrix invApply(const matrix& A, const matrix& b)
-{	static StopWatch watch("invApply(matrix)");
-	watch.start();
-	
+
+#ifdef GPU_ENABLED
+void zeroLowerTriangular_gpu(int N, complex* data); //implemented in matrixOperators.cu
+void zeroUpperTriangular_gpu(int N, complex* data); //implemented in matrixOperators.cu
+#endif
+void zeroLowerTriangular(int N, complex* data); //implemented in matrixOperators.cpp
+void zeroUpperTriangular(int N, complex* data); //implemented in matrixOperators.cpp
+
+//Zero lower/upper triangular part to make matrix upper/lower triangular based on upper=true/false
+void forceTriangular(matrix& A, bool upper)
+{	if(upper)
+		callPref(zeroLowerTriangular)(A.nRows(), A.dataPref());
+	else
+		callPref(zeroUpperTriangular)(A.nRows(), A.dataPref());
+}
+
+
+//Compute Cholesky decomposition: helper for invApply and orthoMatrix
+matrix cholesky(const matrix& A, bool upper)
+{
 	//Check dimensions:
 	assert(A.nCols()==A.nRows());
 	int N = A.nRows();
 	assert(N > 0);
-	assert(N == b.nRows());
-	int Nrhs = b.nCols();
-	assert(Nrhs > 0);
 	
 	//Check hermiticity
 	const double hermErr = callPref(relativeHermiticityError)(N, A.dataPref());
@@ -403,36 +416,102 @@ matrix invApply(const matrix& A, const matrix& b)
 		stackTraceExit(1);
 	}
 
+	//Cholesky decomposition in-place in a copy of A:
+	matrix Acopy = clone(A); //destructible copy; routine will factorize matrix in place
+
 #ifdef USE_CUSOLVER
 	if(N > NcutCuSolver)
 	{	//Get buffer size and allocate for Cholesky factorization:
-		matrix Acopy = A; //destructible copy; routine will factorize matrix in place
-		cublasFillMode_t uplo = CUBLAS_FILL_MODE_UPPER;
+		cublasFillMode_t uplo = (upper ? CUBLAS_FILL_MODE_UPPER : CUBLAS_FILL_MODE_LOWER);
 		int lwork = 0;
 		cusolverDnZpotrf_bufferSize(cusolverHandle, uplo, N, (double2*)Acopy.dataPref(), N, &lwork);
 		ManagedArray<double2> work; work.init(lwork, true);
 		ManagedArray<int> infoArr; infoArr.init(1, true);
 		//Main call:
+		cudaDeviceSynchronize();
 		cusolverDnZpotrf(cusolverHandle, uplo, N, (double2*)Acopy.dataPref(), N, work.dataPref(), lwork, infoArr.dataPref());
 		int info = infoArr.data()[0];
 		if(info<0) { logPrintf("Argument# %d to CuSolver Cholesky routine Zpotrf is invalid.\n", -info); stackTraceExit(1); }
 		if(info>0) { logPrintf("Matrix not positive-definite at leading minor# %d in CuSolver Cholesky routine Zpotrf.\n", info); stackTraceExit(1); }
-		//Solve:
-		matrix x = b; //solution will happen in place
-		cusolverDnZpotrs(cusolverHandle, uplo, N, Nrhs, (double2*)Acopy.dataPref(), N, (double2*)x.dataPref(), N, infoArr.dataPref());
-		info = infoArr.data()[0];
+		forceTriangular(Acopy, upper);
+		return Acopy;
+	}
+#endif
+	char uplo = (upper ? 'U' : 'L');
+	int info = 0;
+	zpotrf_(&uplo, &N, Acopy.data(), &N, &info);
+	if(info<0) { logPrintf("Argument# %d to LAPACK Cholesky routine ZPOTRF is invalid.\n", -info); stackTraceExit(1); }
+	if(info>0) { logPrintf("Matrix not positive-definite at leading minor# %d in LAPACK Cholesky routine ZPOTRF.\n", info); stackTraceExit(1); }
+	forceTriangular(Acopy, upper);
+	return Acopy;
+}
+
+
+matrix invApply(const matrix& A, const matrix& b)
+{	static StopWatch watch("invApply(matrix)");
+	watch.start();
+	
+	//Check dimensions:
+	int N = A.nRows();
+	assert(N == b.nRows());
+	int Nrhs = b.nCols();
+	assert(Nrhs > 0);
+	
+	//Cholesky decomposition:
+	matrix U = cholesky(A, true);  //upper-triangular Cholesky factor
+	matrix x = b; //solution will happen in place here
+
+	//Triangular solves:
+#ifdef USE_CUSOLVER
+	if(N > NcutCuSolver)
+	{	cublasFillMode_t uplo = CUBLAS_FILL_MODE_UPPER;
+		ManagedArray<int> infoArr; infoArr.init(1, true);
+		cusolverDnZpotrs(cusolverHandle, uplo, N, Nrhs, (double2*)U.dataPref(), N, (double2*)x.dataPref(), N, infoArr.dataPref());
+		int info = infoArr.data()[0];
 		if(info<0) { logPrintf("Argument# %d to CuSolver solver routine Zpotrs is invalid.\n", -info); stackTraceExit(1); }
+		watch.stop();
 		return x;
 	}
 #endif
 	//Apply inverse using LAPACK routine:
 	char uplo = 'U';
-	matrix Acopy = A; //destructible copy; routine will factorize matrix in place
-	matrix x = b; //solution will happen in place
 	int info = 0;
-	zposv_(&uplo, &N, &Nrhs, Acopy.data(), &N, x.data(), &N, &info);
-	if(info<0) { logPrintf("Argument# %d to LAPACK linear solve routine ZPOSV is invalid.\n", -info); stackTraceExit(1); }
-	if(info>0) { logPrintf("Matrix not positive-definite at leading minor# %d in LAPACK linear solve routine ZPOSV.\n", info); stackTraceExit(1); }
+	zpotrs_(&uplo, &N, &Nrhs, U.data(), &N, x.data(), &N, &info);
+	if(info<0) { logPrintf("Argument# %d to LAPACK solver routine ZPOTRS is invalid.\n", -info); stackTraceExit(1); }
 	watch.stop();
 	return x;
 }
+
+matrix invTriangular(const matrix& T, bool upper)
+{	int N = T.nRows();
+#ifdef GPU_ENABLED
+	//Solve triangular matrix with identity as RHS (in place):
+	matrix rhs = eye(N);
+	cublasFillMode_t uplo = (upper ? CUBLAS_FILL_MODE_UPPER : CUBLAS_FILL_MODE_LOWER);
+	complex alpha = 1.;
+	cublasZtrsm(cublasHandle, CUBLAS_SIDE_LEFT, uplo, CUBLAS_OP_N, CUBLAS_DIAG_NON_UNIT, N, N,
+		(const double2*)&alpha, (const double2*)T.dataPref(), N, (double2*)rhs.dataPref(), N);
+	return rhs;
+#else
+	//Invert triangular matrix in-place:
+	matrix Tcopy = clone(T); //work in-place on a destructible copy
+	char uplo = upper ? 'U' : 'L';
+	char diag = 'N';
+	int info = 0;
+	ztrtri_(&uplo, &diag, &N, Tcopy.data(), &N, &info);
+	if(info<0) { logPrintf("Argument# %d to LAPACK inversion routine ZTRTRI is invalid.\n", -info); stackTraceExit(1); }
+	if(info>0) { logPrintf("Diagonal entry %d is zero in LAPACK inversion routine ZTRTRI.\n", info); stackTraceExit(1); }
+	return Tcopy;
+#endif
+}
+
+matrix orthoMatrix(const matrix& A)
+{	static StopWatch watch("orthoMatrix(matrix)");
+	bool upper = false;
+	watch.start();
+	matrix U = invTriangular(cholesky(A, upper), upper);
+	watch.stop();
+	if(upper) return U;
+	else return dagger(U);
+}
+

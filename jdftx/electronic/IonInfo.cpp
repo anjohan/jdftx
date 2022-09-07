@@ -485,6 +485,88 @@ matrix IonInfo::rHcommutator(const ColumnBundle& Y, int iDir, const matrix& Ydag
 	return result;
 }
 
+vector3<matrix> IonInfo::rHcommutator(const ColumnBundle &Y1, const ColumnBundle &Y2, const matrix& H12) const
+{	//Ensure compatibility of wavefunctions (only bands can be different):
+	assert(Y1.basis == Y2.basis);
+	assert(Y1.qnum == Y2.qnum);
+	//Kinetic contribution:
+	vector3<matrix> result;
+	for(int iDir=0; iDir<3; iDir++)
+		result[iDir] = e->gInfo.detR * (Y1 ^ D(Y2, iDir));
+	//k-space derivative contributions:
+	matrix3<> dirHatArr(1., 1., 1.); //identity: use each column iDir as unit vector for iDir'th Cartesian direction
+	complex minus_i(0, -1); //prefactor to k-derivatives
+	//DFT+U corrections:
+	if(e->eInfo.hasU)
+	{	const matrix* U_rhoAtomPtr = e->eVars.U_rhoAtom.data();
+		for(const auto& sp: species)
+		{	if(sp->rhoAtom_nMatrices())
+			{	matrix Urho, psiDagY1, psiDagY2;
+				{	ColumnBundle psi;
+					sp->rhoAtom_getV(Y1, U_rhoAtomPtr, psi, Urho);
+					psiDagY1 = psi ^ Y1;
+					psiDagY2 = psi ^ Y2;
+				}
+				for(int iDir=0; iDir<3; iDir++)
+				{	vector3<> dirHat = dirHatArr.column(iDir);
+					ColumnBundle psiPrime; matrix UrhoUnused;
+					sp->rhoAtom_getV(Y1, U_rhoAtomPtr, psiPrime, UrhoUnused, &dirHat);
+					matrix ri_psiDagY1 = minus_i * (psiPrime ^ Y1);
+					matrix ri_psiDagY2 = minus_i * (psiPrime ^ Y2);
+					result[iDir] += dagger(ri_psiDagY1) * (Urho * psiDagY2);
+					result[iDir] += dagger(psiDagY1) * (Urho * ri_psiDagY2);
+				}
+				U_rhoAtomPtr += sp->rhoAtom_nMatrices();
+			}
+		}
+	}
+	//Nonlocal corrections:
+	for(size_t sp=0; sp<species.size(); sp++)
+		if(species[sp]->nProjectors())
+		{	const SpeciesInfo& s = *species[sp];
+			const int nAtoms = s.atpos.size();
+			//Get nonlocal psp matrices and projections:
+			matrix Mnl = s.MnlAll;
+			matrix VdagY1, VdagY2;
+			{	std::shared_ptr<ColumnBundle> V = s.getV(Y1);
+				VdagY1 = (*V) ^ Y1;
+				VdagY2 = (*V) ^ Y2;
+			}
+			//Prepare for ultrasoft augmentation contribution (if any):
+			const matrix id = eye(Mnl.nRows()*nAtoms); //identity
+			matrix Maug = zeroes(id.nRows(), id.nCols());
+			s.augmentDensitySphericalGrad(*Y1.qnum, id, Maug);
+			for(int iDir=0; iDir<3; iDir++)
+			{	vector3<> dirHat = dirHatArr.column(iDir);
+				//Get k derivatives of nonlocal psp projections:
+				std::shared_ptr<ColumnBundle> Vprime = s.getV(Y1, &dirHat);
+				matrix ri_VdagY1 = minus_i * ((*Vprime) ^ Y1);
+				matrix ri_VdagY2 = minus_i * ((*Vprime) ^ Y2);
+				//Apply nonlocal and augmentation corrections to the commutator:
+				tiledBlockMatrix MnlTiled(Mnl, nAtoms);
+				result[iDir] += dagger(ri_VdagY1) * (MnlTiled*VdagY2 + Maug*VdagY2);
+				result[iDir] -= dagger(VdagY1) * (MnlTiled*ri_VdagY2 + Maug*ri_VdagY2);
+				//Account for overlap augmentation (if any):
+				if(s.QintAll.nRows())
+				{	diagMatrix diagH12 = diag(H12);
+					std::vector<complex> riArr;
+					for(const vector3<>& x: s.atpos)
+						riArr.push_back(dot(e->gInfo.R.row(iDir), x));
+					tiledBlockMatrix Qtiled(s.QintAll, nAtoms);
+					tiledBlockMatrix ri_Qtiled(s.QintAll, nAtoms, &riArr);
+					result[iDir] += 
+						( dagger(VdagY1) * (ri_Qtiled * VdagY2)
+						- dagger(ri_VdagY1) * (Qtiled * VdagY2) ) * diag(H12);
+					result[iDir] -= diag(H12) * 
+						( dagger(VdagY1) * (ri_Qtiled * VdagY2)
+						- dagger(VdagY1) * (Qtiled * ri_VdagY2) );
+				}
+			}
+		}
+	return result;
+}
+
+
 int IonInfo::nAtomicOrbitals() const
 {	int nAtomic = 0;
 	for(auto sp: species)

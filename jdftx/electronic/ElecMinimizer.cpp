@@ -271,7 +271,7 @@ double ElecMinimizer::sync(double x) const
 	return x;
 }
 
-void bandMinimize(Everything& e, bool updateVxx)
+void bandMinimize(Everything& e, bool updateVxx, bool isInner)
 {	bool fixed_H = true; std::swap(fixed_H, e.cntrl.fixed_H); //remember fixed_H flag and temporarily set it to true
 	bool loopOuter = updateVxx and e.exCorr.exxFactor(); //whether an outer loop to converge VXX is required
 	int nOuter = loopOuter ? e.cntrl.nOuterVxx : 1;
@@ -287,7 +287,7 @@ void bandMinimize(Everything& e, bool updateVxx)
 		{	logPrintf("\n---- Minimization of quantum number: "); e.eInfo.kpointPrint(globalLog, q, true); logPrintf(" ----\n");
 			switch(e.cntrl.elecEigenAlgo)
 			{	case ElecEigenCG: { BandMinimizer(e, q).minimize(e.elecMinParams); break; }
-				case ElecEigenDavidson: { BandDavidson(e, q).minimize(); break; }
+				case ElecEigenDavidson: { BandDavidson(e, q).minimize(isInner); break; }
 			}
 			e.ener.Eband += e.eInfo.qnums[q].weight * trace(e.eVars.Hsub_eigs[q]);
 		}
@@ -310,7 +310,8 @@ void bandMinimize(Everything& e, bool updateVxx)
 		logPrintf("\n"); logFlush();
 	}
 	std::swap(fixed_H, e.cntrl.fixed_H); //restore fixed_H flag
-	e.eVars.setEigenvectors();
+	if(e.cntrl.elecEigenAlgo != ElecEigenDavidson)
+		e.eVars.setEigenvectors();
 }
 
 
@@ -374,6 +375,8 @@ void elecMinimize(Everything& e)
 	else if(e.cntrl.scf)
 	{	SCF scf(e);
 		scf.minimize();
+		if(e.cntrl.elecEigenAlgo == ElecEigenDavidson)
+			e.eVars.setEigenvectors(); //this was skipped in each bandMinimize()
 	}
 	else if(e.cntrl.fixed_H)
 	{	bandMinimize(e);

@@ -127,6 +127,9 @@ EnumStringMap<DumpVariable> varMap
 	DumpMomenta, "Momenta",
 	DumpVelocities, "Velocities",
 	DumpFermiVelocity, "FermiVelocity",
+	DumpL, "L",
+	DumpQ, "Q",
+	DumpBerry, "Berry",
 	DumpSymmetries, "Symmetries",
 	DumpKpoints, "Kpoints",
 	DumpGvectors, "Gvectors",
@@ -182,6 +185,9 @@ EnumStringMap<DumpVariable> varDescMap
 	DumpMomenta,        "Momentum matrix elements in a binary file (indices outer to inner: state, cartesian direction, band1, band2)",
 	DumpVelocities,     "Diagonal momentum/velocity matrix elements in a binary file  (indices outer to inner: state, band, cartesian direction)",
 	DumpFermiVelocity,  "Fermi velocity, density of states at Fermi level and related quantities",
+	DumpL,              "Angular momentum matrix elements, only allowed at End (see command Cprime-params)",
+	DumpQ,              "Quadrupole r*p matrix elements, only allowed at End (see command Cprime-params)",
+	DumpBerry,          "Berry curvature i <dC/dk| X |dC/dk>, only allowed at End (see command Cprime-params)",
 	DumpSymmetries,     "List of symmetry matrices (in covariant lattice coordinates)",
 	DumpKpoints,        "List of reduced k-points in calculation, and mapping to the unreduced k-point mesh",
 	DumpGvectors,       "List of G vectors in reciprocal lattice basis, for each k-point",
@@ -940,6 +946,8 @@ enum BGWparamsMember
 {	BGWpm_nBandsDense,
 	BGWpm_blockSize,
 	BGWpm_clusterSize,
+	BGWpm_saveVxx,
+	BGWpm_rpaExx,
 	BGWpm_EcutChiFluid,
 	BGWpm_elecOnly,
 	BGWpm_q0,
@@ -955,6 +963,8 @@ EnumStringMap<BGWparamsMember> bgwpmMap
 (	BGWpm_nBandsDense, "nBandsDense",
 	BGWpm_blockSize, "blockSize",
 	BGWpm_clusterSize, "clusterSize",
+	BGWpm_saveVxx, "saveVxx",
+	BGWpm_rpaExx, "rpaExx",
 	BGWpm_EcutChiFluid, "EcutChiFluid",
 	BGWpm_elecOnly, "elecOnly",
 	BGWpm_q0, "q0",
@@ -969,6 +979,8 @@ EnumStringMap<BGWparamsMember> bgwpmDescMap
 (	BGWpm_nBandsDense, "If non-zero, use a dense ScaLAPACK solver to calculate more bands",
 	BGWpm_blockSize, "Block size for ScaLAPACK diagonalization (default: 32)",
 	BGWpm_clusterSize, "Maximum eigenvalue cluster size to allocate extra ScaLAPACK workspace for (default: 10)",
+	BGWpm_saveVxx, "Whether to write exact-exchange matrix elements (default: no)",
+	BGWpm_rpaExx, "Whether to compute RPA-consistent exact-exchange energy (default: no)",
 	BGWpm_EcutChiFluid, "KE cutoff in hartrees for fluid polarizability output (default: 0; set non-zero to enable)",
 	BGWpm_elecOnly, "Whether fluid polarizability output should only include electronic response (default: true)",
 	BGWpm_q0, "Zero wavevector replacement to be used for polarizability output (default: (0,0,0))",
@@ -1001,14 +1013,18 @@ struct CommandBGWparams : public Command
 					pl.get(bgwp.param, val, #param, true); \
 					if(!(bgwp.param op val)) throw string(#param " must be " #op " " #val); \
 					break;
+			#define READ_BOOL(param) \
+				case BGWpm_##param: \
+					pl.get(bgwp.param, false, boolMap, #param, true); \
+					break;
 			switch(key)
 			{	READ_AND_CHECK(nBandsDense, >=, 0)
 				READ_AND_CHECK(blockSize, >, 0)
 				READ_AND_CHECK(clusterSize, >, 0)
+				READ_BOOL(saveVxx)
+				READ_BOOL(rpaExx)
 				READ_AND_CHECK(EcutChiFluid, >=, 0.)
-				case BGWpm_elecOnly:
-					pl.get(bgwp.elecOnly, true, boolMap, "elecOnly", true);
-					break;
+				READ_BOOL(elecOnly)
 				case BGWpm_q0:
 					for(int dir=0; dir<3; dir++)
 						pl.get(bgwp.q0[dir], 0., "q0", true);
@@ -1022,6 +1038,7 @@ struct CommandBGWparams : public Command
 				case BGWpm_Delim: return; //end of input
 			}
 			#undef READ_AND_CHECK
+			#undef READ_BOOL
 		}
 	}
 
@@ -1029,11 +1046,14 @@ struct CommandBGWparams : public Command
 	{	assert(e.dump.bgwParams);
 		const BGWparams& bgwp = *(e.dump.bgwParams);
 		#define PRINT(param, format) logPrintf(" \\\n\t" #param " " format, bgwp.param);
+		#define PRINT_BOOL(param) logPrintf(" \\\n\t" #param " %s", boolMap.getString(bgwp.param));
 		PRINT(nBandsDense, "%d")
 		PRINT(blockSize, "%d")
 		PRINT(clusterSize, "%d")
+		PRINT_BOOL(saveVxx)
+		PRINT_BOOL(rpaExx)
 		PRINT(EcutChiFluid, "%lg")
-		logPrintf(" \\\n\telecOnly %s", boolMap.getString(bgwp.elecOnly));
+		PRINT_BOOL(elecOnly)
 		logPrintf(" \\\n\tq0 %lg %lg %lg", bgwp.q0[0], bgwp.q0[1], bgwp.q0[2]);
 		PRINT(freqReMax_eV, "%lg")
 		PRINT(freqReStep_eV, "%lg")
@@ -1045,3 +1065,48 @@ struct CommandBGWparams : public Command
 	}
 }
 commandBGWparams;
+
+
+struct CommandCprimeParams : public Command
+{
+	CommandCprimeParams() : Command("Cprime-params", "jdftx/Output")
+	{	
+		format = "[<dk>=1E-4] [<degeneracyThreshold>=1E-6] [<vThreshold>=1E-4] [<realSpaceTruncated>=yes]";
+		comments = "Control dC/dk calculation for L and Q output.\n"
+			"Here, <dk> in a0^-1 controls the finite difference used for dC/dk,\n"
+			"while <degeneracyThreshold> specifies the energy range within unitary\n"
+			"rotations are accounted for in comparing wavefunctions between k.\n"
+			"Within degenerate subspaces of energy, rotations are first revolved\n"
+			"by the velocity operator and then obtained by best match between\n"
+			"wavefunctions for sub-subspaces that have the same velocity within\n"
+			"<vThreshold> (in Eh-a0 atomic units).\n"
+			"If <realSpaceTruncated> is yes (default), then truncated directions\n"
+			"are computed by a real space multiplication by r, instead of dC/dk.\n"
+			"\n"
+			"This is used for the calculation of orbital angular momenta L, output\n"
+			"in the same binary format as the momenta and selected by 'dump End L'.\n"
+			"\n"
+			"Additionally, 'dump End Q' selects output of electric quadrupole matrix\n"
+			"elements, defined as traceless symmetric tensor of (rj pk + pj rk).\n"
+			"Specifically, the output is a nStates x 5 x nBands x nBands complex\n"
+			"binary file, where the 5 components in order are xy, yz, zx, xxr, yyr\n"
+			"(where xxr = xx - rr/3). Note that zzr = -(xxr + yyr) because the trace\n"
+			"of the tensor is removed, and this redundant component is excluded.";
+	}
+
+	void process(ParamList& pl, Everything& e)
+	{	e.dump.dumpCprime = std::make_shared<DumpCprime>();
+		DumpCprime& dcp = *(e.dump.dumpCprime);
+		pl.get(dcp.dk, 1E-4, "dk");
+		pl.get(dcp.degeneracyThreshold, 1E-6, "degeneracyThreshold");
+		pl.get(dcp.vThreshold, 1E-4, "vThreshold");
+		pl.get(dcp.realSpaceTruncated, true, boolMap, "realSpaceTruncated");
+	}
+
+	void printStatus(Everything& e, int iRep)
+	{	assert(e.dump.dumpCprime);
+		const DumpCprime& dcp = *(e.dump.dumpCprime);
+		logPrintf("%lg %lg %lg %s", dcp.dk, dcp.degeneracyThreshold, dcp.vThreshold, boolMap.getString(dcp.realSpaceTruncated));
+	}
+}
+commandCprimeParams;

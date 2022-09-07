@@ -55,7 +55,10 @@ extern "C"
 		const complex* b, const int* ib, const int* jb, const int* descb, const complex* beta,
 		complex* c, const int* ic, const int* jc, const int* descc);
 	
-	void zlacpy_(const char* uplo, const int* m, const int* n, const complex* a, const int* lda, complex* b, const int* ldb);
+	void pzgemr2d_(const int* m, const int* n,
+		const complex* a, const int* ia, const int* ja, const int* desca,
+		complex* b, const int* ib, const int* jb, const int* descb,
+		const int* ictxt);
 }
 
 
@@ -87,9 +90,64 @@ template<typename T> std::vector<T> indexVector(const T* v, const std::vector<in
 }
 
 
+void transformV(int q, matrix& V, const matrix& evecs, std::vector<matrix>& Vsub,
+	const ElecInfo& eInfo, int desc[9], int nProcsRow, int nProcsCol,
+	int nRows, int nEigs, int nRowsMine, int nColsMine, int blockSize,
+	int iProcRow, const std::vector<int>& iEigColsMine)
+{
+	static StopWatch watch("scalapackTransformV"); watch.start();
+	matrix Vevecs = zeroes(nRowsMine, nColsMine); //local part of V * evecs
+	//--- parallel matrix multiplies:
+	complex alpha(1.,0.), beta(0.,0.); int one = 1;
+	pzgemm_("N", "N", &nRows, &nRows, &nRows, &alpha,
+		V.data(), &one, &one, desc,
+		evecs.data(), &one, &one, desc, &beta,
+		Vevecs.data(), &one, &one, desc); //VEvecs = V * evecs
+	pzgemm_("C", "N", &nRows, &nRows, &nRows, &alpha,
+		evecs.data(), &one, &one, desc,
+		Vevecs.data(), &one, &one, desc, &beta,
+		V.data(), &one, &one, desc); //VNew = evecx' * VEvecs
+	Vevecs = 0; //cleanup memory
+	
+	//Collect required portion of V on a single process (the one that owns state q):
+	if(eInfo.isMine(q))
+	{	Vsub[q] = zeroes(nEigs, nEigs);
+		for(int jProcRow=0; jProcRow<nProcsRow; jProcRow++)
+			for(int jProcCol=0; jProcCol<nProcsCol; jProcCol++)
+			{	int jProcess = jProcRow * nProcsCol + jProcCol;
+				//Determine indices within nEigs for this block:
+				std::vector<int> jEigRowsMine = distributedIndices(nEigs, blockSize, jProcRow, nProcsRow);
+				std::vector<int> jEigColsMine = distributedIndices(nEigs, blockSize, jProcCol, nProcsCol);
+				
+				if((!jEigRowsMine.size()) or (!jEigColsMine.size()))
+					continue; //nothing from this block
+				//Get current block: locally or from another process
+				matrix Vcur;
+				if(jProcess == mpiWorld->iProcess())
+					Vcur = V(0,jEigRowsMine.size(), 0,jEigColsMine.size()); //local
+				else
+				{	Vcur.init(jEigRowsMine.size(), jEigColsMine.size());
+					mpiWorld->recvData(Vcur, jProcess, 0);
+				}
+				//Distribute to full matrix:
+				const complex* inData = Vcur.data();
+				for(int c: jEigColsMine)
+					for(int r: jEigRowsMine)
+						Vsub[q].set(r, c, *(inData++));
+			}
+	}
+	else
+	{	std::vector<int> iEigRowsMine = distributedIndices(nEigs, blockSize, iProcRow, nProcsRow);
+		if(iEigRowsMine.size() and iEigColsMine.size())
+			mpiWorld->sendData(matrix(V(0,iEigRowsMine.size(), 0,iEigColsMine.size())), eInfo.whose(q), 0);
+	}
+	watch.stop();
+}
+
+
 //Solve wavefunctions using ScaLAPACK and write to hdf5 file:
 void BGW::denseWriteWfn(hid_t gidWfns)
-{	static StopWatch watchDiag("scalapackDiagonalize"), watchSetup("scalapackMatrixSetup"), watchVxc("scalapackVxcTransform");
+{	static StopWatch watchDiag("scalapackDiagonalize"), watchSetup("scalapackMatrixSetup"), watchIO("scalapackWriteHDF5");
 	logPrintf("\n");
 	nBands = bgwp.nBandsDense;
 	if(nSpinor > 1) die("\nDense diagonalization not yet implemented for spin-orbit / vector-spin modes.\n");
@@ -103,12 +161,16 @@ void BGW::denseWriteWfn(hid_t gidWfns)
 	int nProcsCol = nProcesses / nProcsRow;
 
 	//Initialize BLACS process grid:
-	int blacsContext, iProcRow, iProcCol;
+	int blacsContext, blacsContextCol, iProcRow, iProcCol;
 	{	int unused=-1, what=0;
 		blacs_get_(&unused, &what, &blacsContext);
 		blacs_gridinit_(&blacsContext, "Row-major", &nProcsRow, &nProcsCol);
 		blacs_gridinfo_(&blacsContext, &nProcsRow, &nProcsCol, &iProcRow, &iProcCol);
 		assert(mpiWorld->iProcess() == iProcRow * nProcsCol + iProcCol); //this mapping is assumed below, so check
+		//Initialize trivial context for column-split output:
+		int one = 1;
+		blacs_get_(&unused, &what, &blacsContextCol);
+		blacs_gridinit_(&blacsContextCol, "Row-major", &one, &nProcesses);
 	}
 	logPrintf("\tInitialized %d x %d process BLACS grid.\n", nProcsRow, nProcsCol);
 	
@@ -118,6 +180,7 @@ void BGW::denseWriteWfn(hid_t gidWfns)
 	hid_t sid = H5Screate_simple(4, dims, NULL);
 	hid_t did = H5Dcreate(gidWfns, "coeffs", H5T_NATIVE_DOUBLE, sid, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
 	hid_t plid = H5Pcreate(H5P_DATASET_XFER);
+	H5Pset_dxpl_mpio(plid, H5FD_MPIO_INDEPENDENT);
 	H5Sclose(sid);
 	H5Fflush(gidWfns, H5F_SCOPE_GLOBAL);
 	
@@ -156,7 +219,7 @@ void BGW::denseWriteWfn(hid_t gidWfns)
 		
 		//Initialize Hamiltonian matrix:
 		matrix H = zeroes(nRowsMine, nColsMine);
-		matrix Vxc = zeroes(nRowsMine, nColsMine);
+		matrix Vxc = zeroes(nRowsMine, nColsMine), Vxx;
 		//--- Kinetic, potential and kinetic-potential contributions:
 		{	complex* Hdata = H.data();
 			complex* VxcData = Vxc.data();
@@ -240,6 +303,13 @@ void BGW::denseWriteWfn(hid_t gidWfns)
 			e.exx->addHamiltonian(e.exCorr.exxFactor(), e.exCorr.exxRange(), q, HXX, iRowsMine, iColsMine);
 			H += HXX;
 			Vxc += HXX;
+			//Save for Vxx if needed / applicable:
+			if(bgwp.saveVxx and (not e.exCorr.exxRange())) //must be bare exchange
+				Vxx = (1./e.exCorr.exxFactor()) * HXX; //remove hybrid scale factor
+		}
+		if(bgwp.saveVxx and (not Vxx))
+		{	Vxx = zeroes(nRowsMine, nColsMine);
+			e.exx->addHamiltonian(1., 0., q, Vxx, iRowsMine, iColsMine);
 		}
 		matrix evecs(nRowsMine, nColsMine);
 		diagMatrix eigs(nRows);
@@ -295,88 +365,52 @@ void BGW::denseWriteWfn(hid_t gidWfns)
 			{	iEigColsMine.resize(jMine); //remaining columns irrelevant
 				break;
 			}
-		int nEigColsMine = iEigColsMine.size();
 		if(eInfo.isMine(q))
 		{	E[q] = eigs;
 			F[q].resize(nBands, 0.); //update to nBandsDense (padded with zeroes)
 		}
 		
 		//Write the wavefunctions:
-		hsize_t offset[4] = { 0, hsize_t(iSpin), 0, 0 };
-		hsize_t count[4] = { 1, 1, 1, 2 };
-		matrix buf(blockSize, blockSize);
-		int nBlockRows = (nRowsMine+blockSize-1)/blockSize;
-		int nBlockCols = (nEigColsMine+blockSize-1)/blockSize;
-		for(int jBlock=0; jBlock<nBlockCols; jBlock++)
-		{	int jStart = jBlock*blockSize; //start index in local matrix
-			int jCount = std::min(blockSize, nEigColsMine-jStart); //number
-			int jOffset = iEigColsMine[jStart]; //start index in global matrix
-			for(int iBlock=0; iBlock<nBlockRows; iBlock++)
-			{	int iStart = iBlock*blockSize; //start index in local matrix
-				int iCount = std::min(blockSize, nRowsMine-iStart); //number
-				int iOffset = iRowsMine[iStart]; //start index in global matrix
-				//Copy block from local matrix to contiguous buffer:
-				zlacpy_("A", &iCount, &jCount, evecs.data()+nRowsMine*jStart+iStart, &nRowsMine, buf.data(), &iCount);
-				//Select destination in hdf5 file and wwrite from buffer:
-				count[0] = jCount; offset[0] = jOffset; //band index
-				count[2] = iCount; offset[2] = iOffset+nBasisPrev[ik]; //G-vector index
-				sid = H5Dget_space(did);
-				H5Sselect_hyperslab(sid, H5S_SELECT_SET, offset, NULL, count, NULL);
-				hid_t sidMem = H5Screate_simple(4, count, NULL);
-				H5Dwrite(did, H5T_NATIVE_DOUBLE, sidMem, sid, plid, buf.data());
-				H5Sclose(sidMem);
-			}
+		watchIO.start();
+		//--- Switch to column-split form:
+		int colBlockSize = ceildiv(nEigs, nProcesses); //such that 1D block cyclic is just column-split
+		int descIn[9], descOut[9];
+		{	int zero=0, info;
+			//Input descriptor: same as descH, but only use first nEigs columns (of evecs)
+			descinit_(descIn, &nRows, &nEigs, &blockSize, &blockSize, &zero, &zero, &blacsContext, &nRowsMine, &info);
+			assert(info==0);
+			//Output descriptor: full rows, and contiguous column blocks:
+			descinit_(descOut, &nRows, &nEigs, &nRows, &colBlockSize, &zero, &zero, &blacsContextCol, &nRows, &info);
+			assert(info==0);
 		}
+		int iFullColStart = std::min(mpiWorld->iProcess() * colBlockSize, nEigs);
+		int iFullColStop = std::min((mpiWorld->iProcess()+1) * colBlockSize, nEigs);
+		int nFullColsMine = iFullColStop - iFullColStart;
+		matrix buf(nRows, nFullColsMine);
+		pzgemr2d_(&nRows, &nEigs,
+			evecs.data(), &one, &one, descIn,
+			buf.data(), &one, &one, descOut,
+			&blacsContext);
+		//Select destination in hdf5 file and wwrite from buffer:
+		hsize_t offset[4] = { hsize_t(iFullColStart), hsize_t(iSpin), hsize_t(nBasisPrev[ik]), 0 };
+		hsize_t count[4] = { hsize_t(nFullColsMine), 1, hsize_t(nRows), 2 };
+		sid = H5Dget_space(did);
+		H5Sselect_hyperslab(sid, H5S_SELECT_SET, offset, NULL, count, NULL);
+		hid_t sidMem = H5Screate_simple(4, count, NULL);
+		H5Dwrite(did, H5T_NATIVE_DOUBLE, sidMem, sid, plid, buf.data());
+		H5Sclose(sidMem);
 		H5Fflush(gidWfns, H5F_SCOPE_GLOBAL);
+		buf = 0; //cleanup
+		watchIO.stop();
 		
 		//Transform Vxc to eigenbasis:
-		watchVxc.start();
-		matrix VxcEvecs = zeroes(nRowsMine, nColsMine); //local part of Vxc * evecs
-		//--- parallel matrix multiplies:
-		complex alpha(1.,0.), beta(0.,0.);
-		pzgemm_("N", "N", &nRows, &nRows, &nRows, &alpha,
-			Vxc.data(), &one, &one, descH,
-			evecs.data(), &one, &one, descH, &beta,
-			VxcEvecs.data(), &one, &one, descH); //VxcEvecs = Vxc * evecs
-		pzgemm_("C", "N", &nRows, &nRows, &nRows, &alpha,
-			evecs.data(), &one, &one, descH,
-			VxcEvecs.data(), &one, &one, descH, &beta,
-			Vxc.data(), &one, &one, descH); //VxcNew = evecx' * VxcEvecs
-		VxcEvecs = 0; //cleanup memory
+		transformV(q, Vxc, evecs, VxcSub, eInfo, descH, nProcsRow, nProcsCol,
+			nRows, nEigs, nRowsMine, nColsMine, blockSize, iProcRow, iEigColsMine);
 		
-		//Collect required portion of Vxc on a single process (the one that owns state q):
-		if(eInfo.isMine(q))
-		{	VxcSub[q] = zeroes(nEigs, nEigs);
-			for(int jProcRow=0; jProcRow<nProcsRow; jProcRow++)
-				for(int jProcCol=0; jProcCol<nProcsCol; jProcCol++)
-				{	int jProcess = jProcRow * nProcsCol + jProcCol;
-					//Determine indices within nEigs for this block:
-					std::vector<int> jEigRowsMine = distributedIndices(nEigs, blockSize, jProcRow, nProcsRow);
-					std::vector<int> jEigColsMine = distributedIndices(nEigs, blockSize, jProcCol, nProcsCol);
-					
-					if((!jEigRowsMine.size()) or (!jEigColsMine.size()))
-						continue; //nothing from this block
-					//Get current block: locally or from another process
-					matrix VxcCur;
-					if(jProcess == mpiWorld->iProcess())
-						VxcCur = Vxc(0,jEigRowsMine.size(), 0,jEigColsMine.size()); //local
-					else
-					{	VxcCur.init(jEigRowsMine.size(), jEigColsMine.size());
-						mpiWorld->recvData(VxcCur, jProcess, 0);
-					}
-					//Distribute to full matrix:
-					const complex* inData = VxcCur.data();
-					for(int c: jEigColsMine)
-						for(int r: jEigRowsMine)
-							VxcSub[q].set(r, c, *(inData++));
-				}
-		}
-		else
-		{	std::vector<int> iEigRowsMine = distributedIndices(nEigs, blockSize, iProcRow, nProcsRow);
-			if(iEigRowsMine.size() and iEigColsMine.size())
-				mpiWorld->sendData(matrix(Vxc(0,iEigRowsMine.size(), 0,iEigColsMine.size())), eInfo.whose(q), 0);
-		}
-		watchVxc.stop();
+		if(bgwp.saveVxx)
+			//Transform Vxc to eigenbasis:
+			transformV(q, Vxx, evecs, VxxSub, eInfo, descH, nProcsRow, nProcsCol,
+				nRows, nEigs, nRowsMine, nColsMine, blockSize, iProcRow, iEigColsMine);
 	}
 	H5Pclose(plid);
 	H5Dclose(did);

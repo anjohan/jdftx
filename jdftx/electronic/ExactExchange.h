@@ -39,10 +39,12 @@ public:
 	//! (and optionally accumulate gradients) given fillings and wavefunctions.
 	//! If prepareHamiltonian has been called with the same omega already,
 	//! then the ACE representation is used to compute the energy and HC instead,
-	//! except when a lattice gradient is requested which requires full computation.
+	//! except when lattice gradient or RPA-mode are requested which require full computation.
+	//! RPA mode additionally requires electronic eigenvalues E.
 	double operator()(double aXX, double omega,
 		const std::vector<diagMatrix>& F, const std::vector<ColumnBundle>& C,
-		std::vector<ColumnBundle>* HC=0, matrix3<>* EXX_RRT=0) const;
+		std::vector<ColumnBundle>* HC=0, matrix3<>* EXX_RRT=0,
+		bool rpaMode=false, const std::vector<diagMatrix>* Hsub_eigs=0) const;
 	
 	//! Initialize the ACE (Adiabatic Compression of Exchange) representation in preparation for applyHamiltonian
 	void prepareHamiltonian(double omega, const std::vector<diagMatrix>& F, const std::vector<ColumnBundle>& C);

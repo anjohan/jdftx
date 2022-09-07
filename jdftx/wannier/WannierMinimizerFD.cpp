@@ -158,7 +158,7 @@ WannierMinimizerFD::WannierMinimizerFD(const Everything& e, const Wannier& wanni
 	}
 	logPrintf("found a %lu neighbour formula.\n", 2*wb.size());
 	
-	//Find edges :
+	//Find unidirectional edges for full mesh:
 	PeriodicLookup<WannierMinimizer::KmeshEntry> plook(kMesh, e.gInfo.GGT); //look-up table for O(1) fuzzy searching
 	edges.resize(kMesh.size(), std::vector<Edge>(wb.size()));
 	std::vector<std::set<int>> ranksNeeded(kMesh.size()); //rank of other processes that need each rotation
@@ -169,7 +169,7 @@ WannierMinimizerFD::WannierMinimizerFD(const Everything& e, const Wannier& wanni
 			edge.wb = wb[j];
 			edge.b = b[j];
 			//Find neighbour:
-			vector3<> kj = kMesh[i].point.k + inv(e.gInfo.GT) * b[j];
+			vector3<> kj = kMesh[i].point.k + inv(e.gInfo.GT) * edge.b;
 			edge.ik = plook.find(kj);
 			edge.point = kMesh[edge.ik].point;
 			edge.point.offset += round(kj - edge.point.k); //extra offset
@@ -179,6 +179,28 @@ WannierMinimizerFD::WannierMinimizerFD(const Everything& e, const Wannier& wanni
 			int jProc = whose(edge.ik);
 			if(jProc != iProc)
 				ranksNeeded[edge.ik].insert(iProc);
+		}
+	}
+	
+	//Find bidirectional edges for R*P output:
+	if(wannier.saveRP)
+	{	edges_bi = edges; //copy over edges initialized above
+		for(size_t i=0; i<kMesh.size(); i++)
+		{	//Add the reverse edges:
+			edges_bi[i].reserve(2 * wb.size());
+			for(unsigned j=0; j<wb.size(); j++)
+			{	Edge edge;
+				edge.wb = wb[j]; //same weight
+				edge.b = -b[j]; //reverse direction
+				//Find neighbour:
+				vector3<> kj = kMesh[i].point.k + inv(e.gInfo.GT) * edge.b;
+				edge.ik = plook.find(kj);
+				edge.point = kMesh[edge.ik].point;
+				edge.point.offset += round(kj - edge.point.k); //extra offset
+				edge.point.k = kj;
+				kpoints.insert(edge.point);
+				edges_bi[i].push_back(edge);
+			}
 		}
 	}
 	
@@ -238,6 +260,7 @@ void WannierMinimizerFD::initialize(int iSpin)
 	}
 	
 	//Compute the overlap matrices for current spin:
+	logPrintf("Computing initial overlaps ... "); logFlush();
 	for(int jProcess=0; jProcess<mpiWorld->nProcesses(); jProcess++)
 	{	//Send/recv wavefunctions to other processes:
 		Cother.assign(e.eInfo.nStates, ColumnBundle());
@@ -276,6 +299,8 @@ void WannierMinimizerFD::initialize(int iSpin)
 		}
 	}
 	Cother.clear();
+	VdagCother.clear();
+	logPrintf("done.\n"); logFlush();
 	
 	//Broadcast and dump the overlap matrices:
 	FILE* fp = 0;

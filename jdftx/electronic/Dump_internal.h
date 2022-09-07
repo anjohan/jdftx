@@ -30,6 +30,7 @@ class ColumnBundle;
 //! @{
 //! @file Dump_internal.h Implementation internals for output modules
 
+
 //-------------------- Implemented in DumpSIC.cpp ---------------------------
 
 //! Output self-interaction correction for the KS eigenvalues
@@ -104,6 +105,24 @@ struct ChargedDefect
 	double rSigma; //!< Turn-on width of region used for calculating alignment
 	
 	void dump(const Everything& e, ScalarField d_tot) const;
+};
+
+//-------------------- Implemented in DumpCprime.cpp ---------------------------
+
+struct DumpCprime
+{
+	double dk;
+	double degeneracyThreshold;
+	double vThreshold;
+	bool realSpaceTruncated;
+	
+	DumpCprime(double dk=1E-4, double degeneracyThreshold=1E-6, double vThreshold=1E-4, bool realSpaceTruncated=true);
+	void dump(Everything& e) const;
+
+private:
+	ColumnBundle getCprime(Everything& e, int q, int iDir, matrix& CprimeOC) const;
+	ColumnBundle getCpert(Everything& e, int q, vector3<> dkVec, const matrix& dkDotV, matrix& CpertOC) const;
+	matrix fixUnitary(const matrix& CpertOC, const diagMatrix& E, const matrix& dH) const;
 };
 
 //! @}

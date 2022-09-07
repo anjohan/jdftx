@@ -197,13 +197,18 @@ diagMatrix diagDot(const matrix& X, const matrix& Y); //!< Compute diag(dagger(X
 
 //------- Nonlinear matrix functions and their gradients ---------
 
-//! Compute inverse of an arbitrary matrix A (via LU decomposition)
+//! Compute / apply inverse:
 matrix inv(const matrix& A); //!< inverse of matrix
 diagMatrix inv(const diagMatrix& A); //!< inverse of diagonal matrix
+matrix invTriangular(const matrix& T, bool upper); //!< return inv(T) for triangular matrix T (upper/lower for upper=true/false)
 matrix invApply(const matrix& A, const matrix& b); //!< return inv(A) * b (A must be hermitian, positive-definite)
 
 //! Compute the LU decomposition of the matrix
 matrix LU(const matrix& A);
+
+//! Compute Cholesky decomposition of positive definite matrix.
+//! Result in upper- / lower-triangular part for upper = true / false.
+matrix cholesky(const matrix& A, bool upper);
 
 //! Compute the determinant of an arbitrary matrix A (via LU decomposition)
 //! If skipZeros is true, skips diagonal entries in the diagonal of the LU decomposition that are below a tolerance
@@ -219,6 +224,10 @@ matrix pow(const matrix& A, double exponent, matrix* Aevecs=0, diagMatrix* Aeigs
 //! Compute matrix A^-0.5 and optionally the eigensystem of A (if non-null).
 //! If isSingular is provided, function will set it to true and return rather than stack-tracing in singular cases.
 matrix invsqrt(const matrix& A, matrix* Aevecs=0, diagMatrix* Aeigs=0, bool* isSingular=0);
+
+//! Compute matrix that orthonormalizes hermitian matrix A using Cholesky decomposition (effectively the Gram-Schmidt scheme).
+//! This is a potentially much faster alternative to invsqrt, applicable when the transformation does not have to be symmetric.
+matrix orthoMatrix(const matrix& A);
 
 //! Compute cis(A) = exp(iota A) and optionally the eigensystem of A (if non-null)
 matrix cis(const matrix& A, matrix* Aevecs=0, diagMatrix* Aeigs=0);
